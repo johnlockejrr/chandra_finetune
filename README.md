@@ -430,8 +430,8 @@ Converts PAGE-XML and ALTO-XML ground-truth annotations to a HuggingFace dataset
 
 1. **Learning rate**: Start with `2e-4` for LoRA. Reduce to `5e-5` if overfitting (eval_loss rising).
 2. **Vision layers**: Keep `--finetune_vision` for domain adaptation (handwriting, specific layouts). Use `--no_finetune_vision` if your data is already in-distribution.
-3. **Batch size**: With RTX 3060 (12GB), `batch_size=1` + `grad_accum=8` gives effective batch of 8.
-4. **Image resolution**: 2048px is the sweet spot for 12GB VRAM. Use 4096px with 24GB+ GPUs for better accuracy.
+3. **Batch size**: With RTX 3090 (24GB), `batch_size=2` + `grad_accum=8` gives effective batch of 16.
+4. **Image resolution**: 2048px is the sweet spot for 24GB VRAM. Use 4096px with 24GB+ GPUs for better accuracy.
 5. **Temperature**: 0.3 during inference for deterministic OCR output.
 6. **Early stopping**: Recommended to prevent overfitting. Patience=3 with eval_steps=50 is a good starting point.
 7. **CER/WER monitoring**: Teacher-forced CER/WER are logged during eval. For actual generation quality, test post-training with `run_ocr()`.
