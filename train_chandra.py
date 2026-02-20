@@ -517,10 +517,16 @@ def _make_compute_metrics(tokenizer):
     generation.  Still very useful for tracking training progress -- when
     teacher-forced CER goes down, real generation quality goes up.
     """
-    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    pad_id = int(tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0)
+    vocab_sz = int(getattr(tokenizer, "vocab_size", VOCAB_SIZE))
 
     def compute_metrics(eval_pred):
         pred_ids, label_ids = eval_pred
+
+        # The Trainer gathers predictions as float arrays; cast back to int
+        # and clamp to valid token range to prevent overflow errors.
+        pred_ids = np.clip(pred_ids, 0, vocab_sz - 1).astype(np.int64)
+        label_ids = label_ids.astype(np.int64)
         label_ids = np.where(label_ids != -100, label_ids, pad_id)
 
         try:
