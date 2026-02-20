@@ -527,7 +527,14 @@ def _make_compute_metrics(tokenizer):
         # and clamp to valid token range to prevent overflow errors.
         pred_ids = np.clip(pred_ids, 0, vocab_sz - 1).astype(np.int64)
         label_ids = label_ids.astype(np.int64)
-        label_ids = np.where(label_ids != -100, label_ids, pad_id)
+
+        # Only score response tokens: prompt/image positions have label=-100.
+        # Mask those positions in BOTH arrays so decoded text only covers
+        # the response, otherwise predictions contain extra prompt-area
+        # tokens that inflate CER with phantom insertions.
+        response_mask = label_ids != -100
+        pred_ids = np.where(response_mask, pred_ids, pad_id)
+        label_ids = np.where(response_mask, label_ids, pad_id)
 
         try:
             preds = tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
