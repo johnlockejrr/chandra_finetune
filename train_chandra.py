@@ -198,7 +198,7 @@ if "--help" in sys.argv or "-h" in sys.argv:
 # 1. Heavy Imports (deferred past --help)
 # ---------------------------------------------------------------------------
 
-from unsloth import FastVisionModel  # noqa: E402
+from unsloth import FastVisionModel, unsloth_train  # noqa: E402
 import torch  # noqa: E402
 import numpy as np  # noqa: E402
 from transformers import Qwen3VLProcessor, TextStreamer, EarlyStoppingCallback  # noqa: E402
@@ -509,13 +509,18 @@ def _preprocess_logits_for_metrics(logits, labels):
     return logits.argmax(dim=-1)
 
 
-def _make_compute_metrics(tokenizer):
+def _make_compute_metrics(tokenizer, max_samples: int = 64):
     """Build a compute_metrics fn that computes CER and WER via jiwer.
 
     These are *teacher-forced* metrics (the model sees correct previous tokens
     at each step), so they are optimistic compared to actual autoregressive
-    generation.  Still very useful for tracking training progress -- when
-    teacher-forced CER goes down, real generation quality goes up.
+    generation.  Still very useful for tracking training progress.
+
+    Args:
+        tokenizer: The model tokenizer.
+        max_samples: Maximum number of eval samples to decode for CER/WER.
+                     Decoding the full eval set on long sequences is very slow.
+                     64 samples give a reliable metric estimate.
     """
     pad_id = int(tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0)
     vocab_sz = int(getattr(tokenizer, "vocab_size", VOCAB_SIZE))
@@ -523,18 +528,29 @@ def _make_compute_metrics(tokenizer):
     def compute_metrics(eval_pred):
         pred_ids, label_ids = eval_pred
 
-        # The Trainer gathers predictions as float arrays; cast back to int
-        # and clamp to valid token range to prevent overflow errors.
+        # Cast to int64 and clamp to valid token range
         pred_ids = np.clip(pred_ids, 0, vocab_sz - 1).astype(np.int64)
         label_ids = label_ids.astype(np.int64)
 
+        # --- KEY FIX 1: Cap samples to avoid O(N * seq_len) Python decode ---
+        n = pred_ids.shape[0]
+        if n > max_samples:
+            indices = np.random.choice(n, max_samples, replace=False)
+            pred_ids = pred_ids[indices]
+            label_ids = label_ids[indices]
+
         # Only score response tokens: prompt/image positions have label=-100.
-        # Mask those positions in BOTH arrays so decoded text only covers
-        # the response, otherwise predictions contain extra prompt-area
-        # tokens that inflate CER with phantom insertions.
         response_mask = label_ids != -100
         pred_ids = np.where(response_mask, pred_ids, pad_id)
         label_ids = np.where(response_mask, label_ids, pad_id)
+
+        # --- KEY FIX 2: Trim trailing padding columns to reduce decode work ---
+        # Find the last column that has any real (non-pad) label token
+        any_real = response_mask.any(axis=0)  # shape: [seq_len]
+        if any_real.any():
+            last_real_col = int(np.where(any_real)[0].max()) + 1
+            pred_ids = pred_ids[:, :last_real_col]
+            label_ids = label_ids[:, :last_real_col]
 
         try:
             preds = tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
@@ -635,7 +651,7 @@ def build_trainer(
     preprocess_logits_fn = None
     if args.compute_cer_wer and eval_dataset is not None:
         if JIWER_AVAILABLE:
-            compute_metrics_fn = _make_compute_metrics(tokenizer)
+            compute_metrics_fn = _make_compute_metrics(tokenizer, max_samples=64)
             preprocess_logits_fn = _preprocess_logits_for_metrics
             log.info("CER/WER metrics enabled (teacher-forced, via jiwer)")
         else:
@@ -743,7 +759,7 @@ def train(args: argparse.Namespace) -> None:
         else:
             log.warning("No checkpoints found in %s, starting fresh", args.output_dir)
 
-    trainer_stats = trainer.train(resume_from_checkpoint=resume_ckpt)
+    trainer_stats = unsloth_train(trainer, resume_from_checkpoint=resume_ckpt)
 
     used_mem = round(torch.cuda.max_memory_reserved() / 1024**3, 3)
     log.info(
